@@ -45,7 +45,6 @@ async def button(update: Update, context):
 
     if query.data == 'upload_photo':
         await query.edit_message_text(text="Пожалуйста, загрузите фото с VIN-кодом.")
-        # Здесь можно добавить обработчик для получения фотографии
     elif query.data == 'enter_vin':
         await query.edit_message_text(text="Пожалуйста, введите VIN-код.")
 
@@ -62,9 +61,14 @@ async def handle_text(update: Update, context):
 
         if car_info:
             await update.message.reply_text(f"Мы определили, что ваш автомобиль: {car_info}. Верно ли это? (да/нет)")
-            # Здесь можно добавить обработку ответа пользователя (да/нет)
         else:
             await update.message.reply_text("Не удалось получить данные от сервера. Попробуйте снова.")
+    elif vin_code.lower() in ['да', 'нет']:
+        # Обработка ответа "да" или "нет"
+        if vin_code.lower() == 'да':
+            await update.message.reply_text("Отлично! Мы подтвердили информацию.")
+        else:
+            await update.message.reply_text("Попробуйте ввести VIN-код заново.")
     else:
         await update.message.reply_text(f"Введен некорректный VIN-код: {vin_code}. Попробуйте снова.")
 
