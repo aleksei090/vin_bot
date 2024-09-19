@@ -1,0 +1,6 @@
+python-telegram-bot==20.3
+openai==0.27.8
+python-dotenv==1.0.0
+pytesseract==0.3.10
+Pillow==9.5.0
+
