@@ -7,8 +7,6 @@ from telegram.ext import (
 )
 import openai
 from dotenv import load_dotenv
-import pytesseract
-from PIL import Image
 
 # Загрузка переменных окружения из файла .env
 load_dotenv()
@@ -32,9 +30,8 @@ async def start(update: Update, context):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "👋 Добро пожаловать в Мир аккумуляторов!\n\n🔧 Мы поможем вам найти запчасти для вашего автомобиля.\n\nВы можете:\n"
-        "📸 Загрузить фото VIN-кода или ✏️ Ввести его вручную.\n"
-        "Мы подберем для вас лучшие варианты запчастей.\n\nКак вам будет удобнее начать? 😊",
+        "👋 Добро пожаловать! Мы поможем вам найти запчасти для вашего автомобиля.\n"
+        "Вы можете загрузить фото VIN-кода или ввести его вручную.",
         reply_markup=reply_markup
     )
 
@@ -50,57 +47,41 @@ async def button(update: Update, context):
 
 # Обработка введенного VIN-кода
 async def handle_text(update: Update, context):
-    vin_code = update.message.text.strip().upper()
-    logger.info(f"VIN-код получен: {vin_code}")
+    user_input = update.message.text.strip().lower()
 
-    if len(vin_code) == 17:  # Проверка длины VIN-кода
-        await update.message.reply_text(f"Запрос информации для VIN: {vin_code}")
+    if len(user_input) == 17:  # Проверка на VIN-код
+        vin_code = user_input.upper()
+        logger.info(f"VIN-код получен: {vin_code}")
+        await update.message.reply_text(f"Запрос информации по VIN: {vin_code}...")
 
-        # Вызов функции для получения информации
-        car_info = await asyncio.to_thread(ask_chatgpt_for_car_info, vin_code)
-
-        if car_info:
-            await update.message.reply_text(f"Мы определили, что ваш автомобиль: {car_info}. Верно ли это? (да/нет)")
-        else:
-            await update.message.reply_text("Не удалось получить данные от сервера. Попробуйте снова.")
-    elif vin_code.lower() in ['да', 'нет']:
-        # Обработка ответа "да" или "нет"
-        if vin_code.lower() == 'да':
-            await update.message.reply_text("Отлично! Мы подтвердили информацию.")
-        else:
-            await update.message.reply_text("Попробуйте ввести VIN-код заново.")
-    else:
-        await update.message.reply_text(f"Введен некорректный VIN-код: {vin_code}. Попробуйте снова.")
-
-# Обработка фотографий
-async def handle_photo(update: Update, context):
-    photo_file = await update.message.photo[-1].get_file()
-    photo_path = f"photos/{photo_file.file_id}.jpg"
-    os.makedirs('photos', exist_ok=True)
-    await photo_file.download_to_drive(photo_path)
-    logger.info(f"Фото VIN-кода сохранено по пути: {photo_path}")
-
-    # Извлечение VIN-кода из фотографии
-    vin_code = await asyncio.to_thread(extract_vin_from_photo, photo_path)
-
-    if vin_code:
-        await update.message.reply_text(f"Обнаружен VIN-код: {vin_code}. Запрос информации...")
+        # Получение краткой информации о машине по VIN
         car_info = await asyncio.to_thread(ask_chatgpt_for_car_info, vin_code)
         if car_info:
-            await update.message.reply_text(f"Мы определили, что ваш автомобиль: {car_info}. Верно ли это? (да/нет)")
+            await update.message.reply_text(f"Ваш автомобиль: {car_info}. Верно ли это? (да/нет)")
         else:
-            await update.message.reply_text("Не удалось получить данные от сервера. Попробуйте снова.")
+            await update.message.reply_text("Не удалось получить данные. Попробуйте снова.")
     else:
-        await update.message.reply_text("Не удалось распознать VIN-код с фотографии. Пожалуйста, попробуйте снова.")
+        await handle_user_requests(user_input, update)
 
-# Функция для запроса к OpenAI
+# Функция для обработки пользовательских запросов о запчастях
+async def handle_user_requests(user_input, update: Update):
+    if "масляный фильтр" in user_input or "фильтр" in user_input:
+        part_info = await asyncio.to_thread(ask_chatgpt_for_part_info, user_input)
+        if part_info:
+            await update.message.reply_text(f"Совет по фильтру: {part_info}")
+        else:
+            await update.message.reply_text("Не удалось найти информацию по запросу.")
+    else:
+        await update.message.reply_text("Пожалуйста, уточните ваш запрос.")
+
+# Функция для запроса краткой информации по VIN коду
 def ask_chatgpt_for_car_info(vin_code):
     try:
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "Ты опытный специалист по автомобильным запчастям."},
-                {"role": "user", "content": f"Подскажи информацию об автомобиле с VIN-кодом {vin_code}."}
+                {"role": "system", "content": "Ты эксперт по автомобильным запчастям."},
+                {"role": "user", "content": f"Какой автомобиль по VIN {vin_code}? Укажи марку, год и объем двигателя кратко."}
             ]
         )
         car_info = response.choices[0].message.content.strip()
@@ -109,18 +90,20 @@ def ask_chatgpt_for_car_info(vin_code):
         logger.error(f"Ошибка при запросе к OpenAI: {e}")
         return None
 
-# Функция для извлечения VIN-кода из фотографии
-def extract_vin_from_photo(photo_path):
+# Функция для получения информации о запчасти
+def ask_chatgpt_for_part_info(part_query):
     try:
-        image = Image.open(photo_path)
-        text = pytesseract.image_to_string(image)
-        vin_code = ''.join(filter(str.isalnum, text)).upper()
-        if len(vin_code) >= 17:
-            return vin_code[:17]
-        else:
-            return None
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "Ты специалист по автомобильным запчастям."},
+                {"role": "user", "content": f"Найди информацию по запросу: {part_query}. Укажи лучший бренд, отзывы и артикул."}
+            ]
+        )
+        part_info = response.choices[0].message.content.strip()
+        return part_info
     except Exception as e:
-        logger.error(f"Ошибка при извлечении VIN-кода: {e}")
+        logger.error(f"Ошибка при запросе к OpenAI: {e}")
         return None
 
 # Основная функция
@@ -131,7 +114,6 @@ def main():
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))  # Добавлен обработчик фото
 
     # Запуск бота
     logger.info("Бот запущен и готов к работе.")
