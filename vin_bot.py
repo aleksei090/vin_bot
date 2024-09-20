@@ -1,24 +1,18 @@
 import logging
 import os
 import asyncio
-import requests
-from bs4 import BeautifulSoup
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 )
-import openai
+import requests
 from dotenv import load_dotenv
 import pytesseract
 from PIL import Image
 
 # Загрузка переменных окружения из файла .env
 load_dotenv()
-openai_api_key = os.getenv('OPENAI_API_KEY')  # OpenAI API-ключ
 telegram_token = os.getenv('TELEGRAM_TOKEN')  # Telegram API-ключ
-
-# Установка API-ключа OpenAI
-openai.api_key = openai_api_key
 
 # Установим уровень логирования для вывода ошибок
 logging.basicConfig(
@@ -109,26 +103,15 @@ async def handle_photo(update: Update, context):
     else:
         await update.message.reply_text("Не удалось распознать VIN-код с фотографии. Пожалуйста, попробуйте снова.")
 
-# Функция для запроса к OpenAI
+# Функция для запроса данных о машине (можно заменить на реальный источник данных)
 def get_car_info_by_vin(vin_code):
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "Ты опытный специалист по автомобильным запчастям."},
-                {"role": "user", "content": f"Подскажи информацию об автомобиле с VIN-кодом {vin_code}."}
-            ]
-        )
-        car_info = response.choices[0].message.content.strip()
-        return {
-            "make": "Infiniti",
-            "model": "QX56",
-            "year": "2004",
-            "engine_volume": "5.6"
-        }  # Пример данных. На основе реального ответа нужно парсить информацию.
-    except Exception as e:
-        logger.error(f"Ошибка при запросе к OpenAI: {e}")
-        return None
+    # В данном случае мы не делаем реальный запрос, а возвращаем пример данных
+    return {
+        "make": "Infiniti",
+        "model": "QX56",
+        "year": "2004",
+        "engine_volume": "5.6"
+    }
 
 # Функция для извлечения VIN-кода из фотографии
 def extract_vin_from_photo(photo_path):
@@ -144,28 +127,21 @@ def extract_vin_from_photo(photo_path):
         logger.error(f"Ошибка при извлечении VIN-кода: {e}")
         return None
 
-# Функция для поиска запчастей на Emex по VIN-коду
-def search_parts_on_emex(vin_code, part_name):
+# Функция для поиска запчастей по VIN-коду через API
+def get_parts_by_vin(vin_code):
+    api_key = "5c52f6e4db91259648e10e3dfab5828e"
+    url = f"http://partsapi.ru/api.php?method=getPartsbyVIN&key={api_key}&vin={vin_code}&type=oem"
+    
     try:
-        url = f"https://www.emex.ru/search/vin/{vin_code}/{part_name}"  # Пример URL, заменить на реальный
         response = requests.get(url)
-        
         if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Парсинг запчастей
-            parts = []
-            for item in soup.find_all("div", class_="item-class"):  # Пример, заменить на реальные классы
-                name = item.find("div", class_="part-name-class").text
-                price = item.find("div", class_="part-price-class").text
-                article = item.find("div", class_="part-article-class").text
-                parts.append({"name": name, "price": price, "article": article})
-            
-            return parts
+            parts_data = response.json()
+            return parts_data  # Возвращаем список запчастей
         else:
+            logger.error(f"Ошибка API: {response.status_code}")
             return None
     except Exception as e:
-        logger.error(f"Ошибка при поиске запчастей на Emex: {e}")
+        logger.error(f"Ошибка при запросе к API: {e}")
         return None
 
 # Функция для обработки запросов на запчасти
@@ -174,19 +150,16 @@ async def process_request(update: Update, context):
     vin_code = context.user_data.get('vin_code', None)
 
     if vin_code and 'масляный фильтр' in query:
-        # Логика поиска запчастей
         await update.message.reply_text(f"Ищем масляный фильтр для вашего автомобиля VIN: {vin_code}...")
-
-        # Поиск запчастей через функцию поиска
-        parts = await asyncio.to_thread(search_parts_on_emex, vin_code, "масляный фильтр")
+        parts_data = get_parts_by_vin(vin_code)
         
-        if parts:
+        if parts_data and 'parts' in parts_data:
             message = "Вот несколько вариантов:\n"
-            for part in parts:
-                message += f"{part['name']}, {part['price']}, артикул: {part['article']}\n"
+            for part in parts_data['parts']:
+                message += f"Название: {part['name']}, Артикул: {part['article']}, Цена: {part['price']} руб.\n"
             await update.message.reply_text(message)
         else:
-            await update.message.reply_text("Не удалось найти запчасти. Попробуйте снова позже.")
+            await update.message.reply_text("Не удалось найти запчасти.")
     else:
         await update.message.reply_text("Пожалуйста, уточните ваш запрос.")
 
@@ -198,7 +171,7 @@ def main():
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))  # Обработчик фото
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     # Запуск бота
     logger.info("Бот запущен и готов к работе.")
