@@ -9,6 +9,8 @@ import openai
 from dotenv import load_dotenv
 import pytesseract
 from PIL import Image
+import requests
+from bs4 import BeautifulSoup
 
 # Загрузка переменных окружения из файла .env
 load_dotenv()
@@ -118,7 +120,6 @@ def get_car_info_by_vin(vin_code):
             ]
         )
         car_info = response.choices[0].message.content.strip()
-        # Вы можете извлечь нужные детали из ответа (например, марку, модель, год выпуска и объем двигателя)
         return {
             "make": "Infiniti",
             "model": "QX56",
@@ -143,29 +144,47 @@ def extract_vin_from_photo(photo_path):
         logger.error(f"Ошибка при извлечении VIN-кода: {e}")
         return None
 
+# Функция для поиска запчастей на emex.ru
+def search_parts_on_emex(vin_code, query):
+    try:
+        url = f"https://www.emex.ru/catalogs/original/?vin={vin_code}&query={query}"
+        response = requests.get(url)
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Парсинг и поиск результатов
+        parts = []
+        for item in soup.find_all('div', class_='catalog-item'):
+            name = item.find('div', class_='catalog-item-title').text
+            price = item.find('div', class_='catalog-item-price').text
+            article = item.find('div', class_='catalog-item-article').text
+            parts.append({"name": name, "price": price, "article": article})
+        
+        return parts[:4]  # Вернуть 4 результата
+    except Exception as e:
+        logger.error(f"Ошибка при поиске запчастей: {e}")
+        return []
+
 # Функция для обработки запросов на запчасти
 async def process_request(update: Update, context):
     query = update.message.text.lower()
     vin_code = context.user_data.get('vin_code', None)
 
-    if vin_code and 'масляный фильтр' in query:
-        # Логика поиска запчастей
-        await update.message.reply_text("Ищем масляный фильтр для вашего автомобиля...")
-        # Здесь будет логика для поиска 4 вариантов запчастей и их отображения
-        options = [
-            {"name": "Фильтр 1", "price": "1000 руб", "article": "12345"},
-            {"name": "Фильтр 2", "price": "1500 руб", "article": "67890"},
-            {"name": "Фильтр 3", "price": "2000 руб", "article": "54321"},
-            {"name": "Фильтр 4 (оригинал)", "price": "3000 руб", "article": "09876"}
-        ]
-        message = "Вот несколько вариантов:\n"
-        for option in options:
-            message += f"{option['name']}, {option['price']}, артикул: {option['article']}\n"
-        
-        await update.message.reply_text(message)
-        # Здесь можно добавить логику для сохранения выбранного пользователем артикула
+    if vin_code:
+        if 'масляный фильтр' in query:
+            await update.message.reply_text(f"Ищем масляный фильтр для вашего автомобиля VIN: {vin_code}...")
+            parts = await asyncio.to_thread(search_parts_on_emex, vin_code, 'масляный фильтр')
+            
+            if parts:
+                message = "Вот несколько вариантов:\n"
+                for part in parts:
+                    message += f"{part['name']}, {part['price']}, артикул: {part['article']}\n"
+                await update.message.reply_text(message)
+            else:
+                await update.message.reply_text("Не удалось найти запчасти на emex.ru.")
+        else:
+            await update.message.reply_text("Пожалуйста, уточните запрос.")
     else:
-        await update.message.reply_text("Пожалуйста, уточните ваш запрос.")
+        await update.message.reply_text("VIN-код не найден. Введите VIN-код для продолжения.")
 
 # Основная функция
 def main():
