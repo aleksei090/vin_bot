@@ -1,6 +1,8 @@
 import logging
 import os
 import asyncio
+import requests
+from bs4 import BeautifulSoup
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
@@ -9,8 +11,6 @@ import openai
 from dotenv import load_dotenv
 import pytesseract
 from PIL import Image
-import requests
-from bs4 import BeautifulSoup
 
 # Загрузка переменных окружения из файла .env
 load_dotenv()
@@ -125,7 +125,7 @@ def get_car_info_by_vin(vin_code):
             "model": "QX56",
             "year": "2004",
             "engine_volume": "5.6"
-        }  # Это пример. На основе реального ответа вам нужно будет парсить информацию.
+        }  # Пример данных. На основе реального ответа нужно парсить информацию.
     except Exception as e:
         logger.error(f"Ошибка при запросе к OpenAI: {e}")
         return None
@@ -144,47 +144,51 @@ def extract_vin_from_photo(photo_path):
         logger.error(f"Ошибка при извлечении VIN-кода: {e}")
         return None
 
-# Функция для поиска запчастей на emex.ru
-def search_parts_on_emex(vin_code, query):
+# Функция для поиска запчастей на Emex по VIN-коду
+def search_parts_on_emex(vin_code, part_name):
     try:
-        url = f"https://www.emex.ru/catalogs/original/?vin={vin_code}&query={query}"
+        url = f"https://www.emex.ru/search/vin/{vin_code}/{part_name}"  # Пример URL, заменить на реальный
         response = requests.get(url)
-        soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Парсинг и поиск результатов
-        parts = []
-        for item in soup.find_all('div', class_='catalog-item'):
-            name = item.find('div', class_='catalog-item-title').text
-            price = item.find('div', class_='catalog-item-price').text
-            article = item.find('div', class_='catalog-item-article').text
-            parts.append({"name": name, "price": price, "article": article})
-        
-        return parts[:4]  # Вернуть 4 результата
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Парсинг запчастей
+            parts = []
+            for item in soup.find_all("div", class_="item-class"):  # Пример, заменить на реальные классы
+                name = item.find("div", class_="part-name-class").text
+                price = item.find("div", class_="part-price-class").text
+                article = item.find("div", class_="part-article-class").text
+                parts.append({"name": name, "price": price, "article": article})
+            
+            return parts
+        else:
+            return None
     except Exception as e:
-        logger.error(f"Ошибка при поиске запчастей: {e}")
-        return []
+        logger.error(f"Ошибка при поиске запчастей на Emex: {e}")
+        return None
 
 # Функция для обработки запросов на запчасти
 async def process_request(update: Update, context):
     query = update.message.text.lower()
     vin_code = context.user_data.get('vin_code', None)
 
-    if vin_code:
-        if 'масляный фильтр' in query:
-            await update.message.reply_text(f"Ищем масляный фильтр для вашего автомобиля VIN: {vin_code}...")
-            parts = await asyncio.to_thread(search_parts_on_emex, vin_code, 'масляный фильтр')
-            
-            if parts:
-                message = "Вот несколько вариантов:\n"
-                for part in parts:
-                    message += f"{part['name']}, {part['price']}, артикул: {part['article']}\n"
-                await update.message.reply_text(message)
-            else:
-                await update.message.reply_text("Не удалось найти запчасти на emex.ru.")
+    if vin_code and 'масляный фильтр' in query:
+        # Логика поиска запчастей
+        await update.message.reply_text(f"Ищем масляный фильтр для вашего автомобиля VIN: {vin_code}...")
+
+        # Поиск запчастей через функцию поиска
+        parts = await asyncio.to_thread(search_parts_on_emex, vin_code, "масляный фильтр")
+        
+        if parts:
+            message = "Вот несколько вариантов:\n"
+            for part in parts:
+                message += f"{part['name']}, {part['price']}, артикул: {part['article']}\n"
+            await update.message.reply_text(message)
         else:
-            await update.message.reply_text("Пожалуйста, уточните запрос.")
+            await update.message.reply_text("Не удалось найти запчасти. Попробуйте снова позже.")
     else:
-        await update.message.reply_text("VIN-код не найден. Введите VIN-код для продолжения.")
+        await update.message.reply_text("Пожалуйста, уточните ваш запрос.")
 
 # Основная функция
 def main():
@@ -194,7 +198,7 @@ def main():
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))  # Добавлен обработчик фото
+    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))  # Обработчик фото
 
     # Запуск бота
     logger.info("Бот запущен и готов к работе.")
