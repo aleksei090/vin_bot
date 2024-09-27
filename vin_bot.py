@@ -5,16 +5,18 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 )
-import requests
 from dotenv import load_dotenv
 import pytesseract
 from PIL import Image
+from vininfo import Vin
+import requests
 
-# Загрузка переменных окружения из файла .env
+# Загрузка переменных окружения
 load_dotenv()
 telegram_token = os.getenv('TELEGRAM_TOKEN')  # Telegram API-ключ
+prlg_api_key = os.getenv('PRLG_API_KEY')      # API-ключ pr-lg.ru
 
-# Установим уровень логирования для вывода ошибок
+# Установка уровня логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
@@ -42,42 +44,40 @@ async def button(update: Update, context):
     elif query.data == 'enter_vin':
         await query.edit_message_text(text="Пожалуйста, введите VIN-код.")
 
-# Обработка подтверждения VIN и продолжение работы
-async def handle_confirmation(update: Update, context):
-    user_reply = update.message.text.lower()
-    vin_code = context.user_data.get('vin_code', None)
-    
-    if vin_code:
-        if user_reply == "да":
-            await update.message.reply_text("Теперь можете запросить нужную запчасть.")
-        elif user_reply == "нет":
-            await update.message.reply_text("Пожалуйста, введите корректный VIN-код.")
-        else:
-            await update.message.reply_text("Некорректный ответ. Пожалуйста, ответьте 'да' или 'нет'.")
-    else:
-        await update.message.reply_text("Пожалуйста, введите VIN-код для начала.")
-
-# Обновленный обработчик текста
+# Обработка текста
 async def handle_text(update: Update, context):
-    user_input = update.message.text.lower()
+    user_input = update.message.text.strip()
 
-    # Если уже подтвержден VIN и запрашивается запчасть
+    if 'awaiting_part' in context.user_data and context.user_data['awaiting_part']:
+        await handle_part_input(update, context)
+        return
+
+    # Если VIN-код уже сохранен, переходим к запросу запчасти
     if 'vin_code' in context.user_data:
-        await process_request(update, context)
-    else:
-        # Обработка VIN-кода
-        vin_code = user_input.strip().upper()
-        if len(vin_code) == 17:
-            car_info = await asyncio.to_thread(get_car_info_by_vin, vin_code)
-            if car_info:
-                context.user_data['vin_code'] = vin_code
-                await update.message.reply_text(
-                    f"Ваш автомобиль: {car_info['make']} {car_info['model']}, {car_info['year']}, объем двигателя {car_info['engine_volume']} л. Верно? (да/нет)"
-                )
-            else:
-                await update.message.reply_text("Не удалось получить информацию о машине.")
+        if user_input.lower() in ['да', 'верно']:
+            await update.message.reply_text(
+                "Отлично! Пожалуйста, введите название или артикул необходимой запчасти."
+            )
+            context.user_data['awaiting_part'] = True
         else:
-            await update.message.reply_text("Некорректный VIN-код. Попробуйте снова.")
+            await update.message.reply_text("Пожалуйста, введите корректный VIN-код.")
+            context.user_data.clear()
+        return
+
+    # Обработка VIN-кода
+    vin_code = user_input.upper()
+    if len(vin_code) == 17:
+        car_info = await asyncio.to_thread(decode_vin, vin_code)
+        if car_info:
+            context.user_data['vin_code'] = vin_code
+            context.user_data['car_info'] = car_info
+            await update.message.reply_text(
+                f"Ваш автомобиль: {car_info}. Верно? (да/нет)"
+            )
+        else:
+            await update.message.reply_text("Не удалось получить информацию о машине по VIN-коду.")
+    else:
+        await update.message.reply_text("Некорректный VIN-код. Пожалуйста, введите корректный VIN-код.")
 
 # Обработка фотографий
 async def handle_photo(update: Update, context):
@@ -92,26 +92,27 @@ async def handle_photo(update: Update, context):
 
     if vin_code:
         context.user_data['vin_code'] = vin_code
-        await update.message.reply_text(f"Обнаружен VIN-код: {vin_code}. Запрос информации...")
-        car_info = await asyncio.to_thread(get_car_info_by_vin, vin_code)
+        car_info = await asyncio.to_thread(decode_vin, vin_code)
         if car_info:
+            context.user_data['car_info'] = car_info
             await update.message.reply_text(
-                f"Ваш автомобиль: {car_info['make']} {car_info['model']}, {car_info['year']}, объем двигателя {car_info['engine_volume']} л. Верно? (да/нет)"
+                f"Ваш автомобиль: {car_info}. Верно? (да/нет)"
             )
         else:
-            await update.message.reply_text("Не удалось получить информацию о машине.")
+            await update.message.reply_text("Не удалось получить информацию о машине по VIN-коду.")
     else:
         await update.message.reply_text("Не удалось распознать VIN-код с фотографии. Пожалуйста, попробуйте снова.")
 
-# Функция для запроса данных о машине (можно заменить на реальный источник данных)
-def get_car_info_by_vin(vin_code):
-    # В данном случае мы не делаем реальный запрос, а возвращаем пример данных
-    return {
-        "make": "Infiniti",
-        "model": "QX56",
-        "year": "2004",
-        "engine_volume": "5.6"
-    }
+# Функция для декодирования VIN-кода
+def decode_vin(vin_code):
+    try:
+        vin = Vin(vin_code)
+        vin_data = vin.parse()
+        car_info = f"{vin_data['manufacturer']} {vin_data['model_year']}"
+        return car_info
+    except Exception as e:
+        logger.error(f"Ошибка при декодировании VIN-кода: {e}")
+        return None
 
 # Функция для извлечения VIN-кода из фотографии
 def extract_vin_from_photo(photo_path):
@@ -119,59 +120,65 @@ def extract_vin_from_photo(photo_path):
         image = Image.open(photo_path)
         text = pytesseract.image_to_string(image)
         vin_code = ''.join(filter(str.isalnum, text)).upper()
-        if len(vin_code) >= 17:
-            return vin_code[:17]
+        if len(vin_code) == 17:
+            return vin_code
         else:
             return None
     except Exception as e:
-        logger.error(f"Ошибка при извлечении VIN-кода: {e}")
+        logger.error(f"Ошибка при извлечении VIN-кода из фото: {e}")
         return None
 
-# Функция для поиска запчастей по VIN-коду через API
-def get_parts_by_vin(vin_code):
-    api_key = "5c52f6e4db91259648e10e3dfab5828e"
-    url = f"http://partsapi.ru/api.php?method=getPartsbyVIN&key={api_key}&vin={vin_code}&type=oem"
-    
+# Обработка запроса запчасти
+async def process_request(update: Update, context):
+    await update.message.reply_text(
+        "Пожалуйста, введите название или артикул необходимой запчасти."
+    )
+    context.user_data['awaiting_part'] = True
+
+# Обработка ввода запчасти
+async def handle_part_input(update: Update, context):
+    user_input = update.message.text.strip()
+    context.user_data['awaiting_part'] = False
+
+    # Здесь можно добавить логику для поиска артикула по названию запчасти
+    # Пока предполагаем, что пользователь ввел артикул
+
+    article = user_input.upper()
+    # Поиск на pr-lg.ru по артикулу
+    prlg_data = await asyncio.to_thread(get_prlg_data_by_article, article)
+    if prlg_data:
+        message = "Вот что удалось найти на pr-lg.ru:\n"
+        for item in prlg_data:
+            message += f"Название: {item['description']}, Цена: {item['price']} руб., Наличие: {item['quantity']}\n"
+        await update.message.reply_text(message)
+    else:
+        await update.message.reply_text("Не удалось найти запчасть на pr-lg.ru.")
+
+# Функция для поиска на pr-lg.ru по артикулу
+def get_prlg_data_by_article(article):
+    api_key = prlg_api_key
+    url = f"https://api.pr-lg.ru/search/items?secret={api_key}&article={article}"
     try:
         response = requests.get(url)
         if response.status_code == 200:
-            parts_data = response.json()
-            return parts_data  # Возвращаем список запчастей
+            prlg_data = response.json()
+            return prlg_data.get('data', [])
         else:
-            logger.error(f"Ошибка API: {response.status_code}")
+            logger.error(f"Ошибка API pr-lg.ru: {response.status_code}")
             return None
     except Exception as e:
-        logger.error(f"Ошибка при запросе к API: {e}")
+        logger.error(f"Ошибка при запросе к pr-lg.ru: {e}")
         return None
-
-# Функция для обработки запросов на запчасти
-async def process_request(update: Update, context):
-    query = update.message.text.lower()
-    vin_code = context.user_data.get('vin_code', None)
-
-    if vin_code and 'масляный фильтр' in query:
-        await update.message.reply_text(f"Ищем масляный фильтр для вашего автомобиля VIN: {vin_code}...")
-        parts_data = get_parts_by_vin(vin_code)
-        
-        if parts_data and 'parts' in parts_data:
-            message = "Вот несколько вариантов:\n"
-            for part in parts_data['parts']:
-                message += f"Название: {part['name']}, Артикул: {part['article']}, Цена: {part['price']} руб.\n"
-            await update.message.reply_text(message)
-        else:
-            await update.message.reply_text("Не удалось найти запчасти.")
-    else:
-        await update.message.reply_text("Пожалуйста, уточните ваш запрос.")
 
 # Основная функция
 def main():
     application = Application.builder().token(telegram_token).build()
 
-    # Регистрация команд и обработчиков
+    # Регистрация обработчиков
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CallbackQueryHandler(button))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     # Запуск бота
     logger.info("Бот запущен и готов к работе.")
